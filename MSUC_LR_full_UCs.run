@@ -1,4 +1,8 @@
 # commands MSUC.run
+# Implementation of lagrangian relaxation method for solving 
+#    Gen-Transmission Maintenance Scheduling (Outage Coordination) problems
+# Author: Xingpeng Li, https://rpglab.github.io/
+
 printf "\n\n\n##############  Start Solving the Outage Coordination Problem ##############\n\n\n";
 
 model MSUC_Model_LR_full_UCs.mod;
