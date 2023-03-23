@@ -1,6 +1,5 @@
-# EEE 598 OR in PWRS
-# April.4th, 2014
-# Project 5
+# Gen-Transmission Maintenance Scheduling Models with LR
+# Author: Xingpeng Li, https://rpglab.github.io/
 
 set BUS;    # set of buses
 set BRANCH; # set of branches
