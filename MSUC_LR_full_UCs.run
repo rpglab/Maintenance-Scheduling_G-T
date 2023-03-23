@@ -1,0 +1,535 @@
+# commands MSUC.run
+printf "\n\n\n##############  Start Solving the Outage Coordination Problem ##############\n\n\n";
+
+model MSUC_Model_LR_full_UCs.mod;
+data ieee73_dataFile.dat;
+
+option solver gurobi;
+option gurobi_options('mipgap=0.01 timelim=60 bestbound=1');
+#option solver cplexamp;
+#option cplex_options('mipgap=0.01 timelim=90 integrality = 0.0');
+option show_stats 1;
+
+# define problems
+problem SubProblem_1:
+                Jkt,            # Variables start
+                Ugt, Vgt, gen_supply, reserve, line_flow, bus_angle,
+                M_COST_S1_UC,               # Objective function
+				Jkt_Tighten1, Jkt_Tighten2, Jkt_Tighten3,
+				PGen1, unitReserve2, unitReserve1, systemReserve,   # Constraints
+				HR_RampUP, HR_RampUP2, HR_RampDN,
+				FacetUP, FacetDN, SUSD, SUSD2,
+				PowerBal, 
+				Thermal1, Thermal2, Line_FlowEq, Line_FlowEq2;
+#option gurobi_options('mipgap=0.05 timelim=60 bestbound=1');
+				
+problem SubProblem_1_Fixed: 
+                Jkt,             # Variables start
+                Ugt, Vgt, gen_supply, reserve, line_flow, bus_angle,
+				LdSheding1,
+				LdSheddingCons,
+				#LdSheding2,
+				Jkt_Fixed, Ugt_Fixed,
+                M_COST_S1_UC_fixed,               # Objective function
+				PGen1, unitReserve2, unitReserve1, systemReserve,   # Constraints
+				HR_RampUP, HR_RampUP2, HR_RampDN,
+				FacetUP, FacetDN, SUSD, SUSD2,
+				PowerBal_LS,
+				Thermal1, Thermal2, Line_FlowEq, Line_FlowEq2;
+#option gurobi_options('mipgap=0.005 timelim=300 bestbound=1');
+				
+problem SubProblem_2:
+                Ykt, ckt, dkt,             # Variables start
+                M_COST_S2,               # Objective function
+				#costConstr,                                           # Constraints start
+				MC_Transm1, MC_Transm2, MC_Transm3, MC_Transm4,
+				MC_Transm5, MC_Transm6, MC_Transm7;
+#option gurobi_options('mipgap=0.001 timelim=60 bestbound=1');
+
+problem SubProblem_3:
+                Xgt, agt, bgt,             # Variables start
+                M_COST_S3,               # Objective function
+				#costConstr,                                           # Constraints start
+				MC_Gen1, MC_Gen2, MC_Gen3, MC_Gen4,
+				MC_Gen5, MC_Gen6, MC_Gen7;
+#option gurobi_options('mipgap=0.001 timelim=60 bestbound=1');
+
+
+# Initial DUAL VARIABLES value.
+for{j in BRANCH, t in LOAD}
+{
+    let dual_YktJkt[j,t] := 0;
+}
+
+for{g in GEND, t in LOAD}
+{
+    let dual_XgtUgt[g,t] := 100;
+}
+
+param epsilon; let epsilon := 0.05;
+param MaxIter; let MaxIter:= 20;
+param scale; let scale := 0.5;
+param scale_Init_limit; let scale_Init_limit := 5;    # starting time to change step-size
+param scale_limit := 2;      #
+param UpdateIterNum; let UpdateIterNum := 1;   # updating upper bounds every UpdateIterNum iterations
+
+param LB_init; let LB_init := 0;
+param LB; let LB := LB_init;
+param best_LB; let best_LB := LB_init;
+param LBlog {0..MaxIter};  let LBlog[0] := LB;
+param Pseudo_LB;  let Pseudo_LB := LB_init;
+param Pseudo_LBlog {0..MaxIter};  let Pseudo_LBlog[0] := LB_init;
+param MarkUpdateLB {1..MaxIter};
+param numUpdateLB; let numUpdateLB := 0;
+param numNotUpdateLB; let numNotUpdateLB := 0;
+param UB_init; let UB_init := 5*10^9;
+param UB; let UB := UB_init;
+param UB_test;
+param UB_test_M; let UB_test_M := 0;
+param best_UB; let best_UB := UB;
+param UBlog {0..MaxIter};  let UBlog[0] := UB;
+param MarkUpdateUB {1..MaxIter};
+param numUpdateUB; let numUpdateUB := 0;
+param numNotUpdateUB; let numNotUpdateUB := 0;
+param UBtemp;
+param numLoadShedding; let numLoadShedding := 0;
+param same; let same := 0;
+param scalelog {1..MaxIter};
+param alphaTM;
+param alphalogTM {1..MaxIter};
+param alphaGM;
+param alphalogGM {1..MaxIter};
+
+param iter; let iter := 1;
+param UpdateIter; let UpdateIter := 0;
+param gap; let gap := 100;
+param best_gap; let best_gap := gap;
+param best_gapAll {0..MaxIter}; let best_gapAll[0] := gap;
+param gapAll {0..MaxIter};  let gapAll[0] := gap;
+param gapGurobi_Sub_1_All {1..MaxIter, 1..numI};
+param gapGurobi_Sub_1_fixed_All {1..MaxIter, 1..numI};
+param feasible;
+param tempTM;
+param tempGM;
+param LS_test;
+
+param M_COST_S1; let M_COST_S1 := 0;
+param M_COST_S1_bestbound; let M_COST_S1_bestbound := 0;
+param M_COST_S1_fixed; let M_COST_S1_fixed := 0;
+param M_COST_S1_fixed_bestbound; let M_COST_S1_fixed_bestbound := 0;
+
+param numChanged_dual_XgtUgt {1..MaxIter};
+
+
+suffix bestbound OUT;
+
+##### Preprocess
+if nT mod nTofI == 0 then
+{
+    let numI := nT / nTofI;
+    printf "\n~~~~~~~~~~~~~~~ There are %d intervals. ~~~~~~~~~~~~~~~\n\n", numI;
+}
+else
+{
+    printf "\n~~~~~~~~~~~~~~~ WARNING warning WARNING warning WARNING !!! ~~~~~~~~~~~~~~~\n\n";
+}
+
+##### Iteration process
+repeat while (iter <= MaxIter)
+{
+    printf "\n\n############## Solving SubProblem_1 in %d-th Iteration. ##############\n\n\n", iter;
+	let M_COST_S1 := 0;
+	let M_COST_S1_bestbound := 0;
+	for{idx in 1..numI}
+	{
+	    let {n in BUS, t in LOAD_UC} Bus_Pd_UC[n,t] := Bus_Pd[n, t+(idx-1)*nTofI];
+		let {j in BRANCH, t in LOAD_UC} dual_YktJkt_UC[j,t] := dual_YktJkt[j,t+(idx-1)*nTofI];
+		let {g in GEND, t in LOAD_UC} dual_XgtUgt_UC[g,t] := dual_XgtUgt[g,t+(idx-1)*nTofI];
+		
+		if iter >= 2 then         # using the solution from previous iteration as an initial point
+		{
+	  	    let {j in BRANCH, t in LOAD_UC} Jkt[j,t] := temp_Jkt[j,t+(idx-1)*nTofI];
+	 	    let {g in GEND, t in LOAD_UC} Ugt[g,t] := temp_Ugt[g,t+(idx-1)*nTofI];
+	 	    let {g in GEND, t in LOAD_UC} Vgt[g,t] := temp_Vgt[g,t+(idx-1)*nTofI];
+	 	    let {g in GEND, t in LOAD_UC} gen_supply[g,t] := temp_gen_supply[g,t+(idx-1)*nTofI];
+			let {g in GEND, t in LOAD_UC} reserve[g,t] := temp_reserve[g,t+(idx-1)*nTofI];
+			let {j in BRANCH, t in LOAD_UC} line_flow[j,t] := temp_line_flow[j,t+(idx-1)*nTofI];
+			let {n in BUS, t in LOAD_UC} bus_angle[n,t] := temp_bus_angle[n,t+(idx-1)*nTofI];		
+		}
+		printf "\n\n~~~~~~~~~~~ Solving sub-problem 1 for %d-th interval in %d-th Iteration. ~~~~~~~~~~~\n", idx, iter;
+	    solve SubProblem_1;
+		display _total_solve_elapsed_time; 
+		let M_COST_S1 := M_COST_S1 + M_COST_S1_UC;
+		let M_COST_S1_bestbound := M_COST_S1_bestbound + M_COST_S1_UC.bestbound;
+    	let gapGurobi_Sub_1_All[iter,idx] := (M_COST_S1_UC - M_COST_S1_UC.bestbound)/M_COST_S1_UC;
+
+	    for{g in GEND, t in LOAD_UC}
+		{
+		    if abs(gen_supply[g,t]) <= 0.001 then
+		    {
+		        let gen_supply[g,t] := 0;
+		    }
+			
+		    if abs(reserve[g,t]) <= 0.001 then
+		    {
+		        let reserve[g,t] := 0;
+		    }
+
+		    if abs(Ugt[g,t] - 1) <= 0.001 then
+		    {
+		        let Ugt[g,t] := 1;
+		    }
+		    else if abs(Ugt[g,t] - 0) <= 0.01 then
+		    {
+		        let Ugt[g,t] := 0;
+		    }
+		    else
+		    {
+		        printf "\n\n!!!!!!!!!  Something wrong when passing param Ugt from subp1 to subp1_fix.  !!!!!!!!!!\n\n";
+		    }
+			
+		    if abs(Vgt[g,t] - 1) <= 0.001 then
+		    {
+		        let Vgt[g,t] := 1;
+		    }
+		    else if abs(Vgt[g,t] - 0) <= 0.01 then
+		    {
+		        let Vgt[g,t] := 0;
+		    }
+		    else
+		    {
+		        printf "\n\n!!!!!!!!!  Something wrong when passing param Vgt from subp1 to Sub-subp1_fix.  !!!!!!!!!!\n\n";
+		    }
+		}
+		for{k in BRANCH, t in LOAD_UC}
+		{
+		    if abs(Jkt[k,t] - 1) <= 0.001 then
+		    {
+		        let Jkt[k,t] := 1;
+		    }
+		    else if abs(Jkt[k,t] - 0) <= 0.01 then
+		    {
+		        let Jkt[k,t] := 0;
+		    }
+		    else
+		    {
+		        printf "\n\n!!!!!!!!!  Something wrong when passing param Jkt from subp1 to subp1_fix.  !!!!!!!!!!\n\n";
+		    }
+		}
+		let {k in BRANCH, t in LOAD_UC} temp_Jkt[k,t+(idx-1)*nTofI] := Jkt[k,t];
+		let {g in GEND, t in LOAD_UC} temp_Ugt[g,t+(idx-1)*nTofI] := Ugt[g,t];
+	    let {g in GEND, t in LOAD_UC} temp_Vgt[g,t+(idx-1)*nTofI] := Vgt[g,t];
+	    let {g in GEND, t in LOAD_UC} temp_gen_supply[g,t+(idx-1)*nTofI] := gen_supply[g,t];
+		let {g in GEND, t in LOAD_UC} temp_reserve[g,t+(idx-1)*nTofI] := reserve[g,t];
+		let {j in BRANCH, t in LOAD_UC} temp_line_flow[j,t+(idx-1)*nTofI] := line_flow[j,t];
+		let {n in BUS, t in LOAD_UC} temp_bus_angle[n,t+(idx-1)*nTofI] := bus_angle[n,t];
+	}
+
+    printf "\n############## Solving Subproblem_2 TM in %d-th  Iteration ##############\n", iter;
+	if iter >= 2 then
+	{
+	    let {j in BRANCH, t in LOAD} Ykt[j,t] := temp_Ykt[j,t];
+	    let {g in GEND, t in LOAD} Xgt[g,t] := temp_Xgt[g,t];
+	}
+    solve SubProblem_2;
+	for{k in BRANCH, t in LOAD}
+	{
+	    if abs(Ykt[k,t] - 1) <= 0.001 then
+	    {
+	        let Ykt[k,t] := 1;
+	    }
+	    else if abs(Ykt[k,t] - 0) <= 0.01 then
+	    {
+	        let Ykt[k,t] := 0;
+	    }
+	    else
+	    {
+	        printf "\n\n!!!!!!!!!  Something wrong when passing param Ykt from subp1 to subp1_fix.  !!!!!!!!!!\n\n";
+	    }
+	}
+	let {j in BRANCH, t in LOAD} temp_Ykt[j,t] := Ykt[j,t];
+
+    printf "\n############## Solving Subproblem_3 GM in %d-th  Iteration ##############\n", iter;
+    solve SubProblem_3;
+	for{g in GEND, t in LOAD}
+	{
+	    if abs(Xgt[g,t] - 1) <= 0.001 then
+	    {
+	        let Xgt[g,t] := 1;
+	    }
+	    else if abs(Xgt[g,t] - 0) <= 0.01 then
+	    {
+	        let Xgt[g,t] := 0;
+	    }
+	    else
+	    {
+	        printf "\n\n!!!!!!!!!  Something wrong when passing param Xgt from subp1 to subp1_fix.  !!!!!!!!!!\n\n";
+	    }
+	}
+	let {g in GEND, t in LOAD} temp_Xgt[g,t] := Xgt[g,t];
+
+    display _total_solve_elapsed_time;
+
+	let LB := M_COST_S1_bestbound + M_COST_S2.bestbound + M_COST_S3.bestbound;
+    let LBlog[iter] := LB;
+	let Pseudo_LB := M_COST_S1 + M_COST_S2 + M_COST_S3;
+	let Pseudo_LBlog[iter] := Pseudo_LB;
+    let MarkUpdateLB[iter] := 0;
+	if(LB > best_LB + 0.001) then
+	{
+	    let MarkUpdateLB[iter] := 1;
+	    let best_LB := LB;
+        printf "\n\n------------ Updating LB Successfully in %d-th Iteration-------\n\n", iter;
+		let numUpdateLB := numUpdateLB + 1;
+	}
+	else
+	{
+	    let numNotUpdateLB := numNotUpdateLB + 1;
+        printf "\n\n------------ Not Updating LB in %d-th Iteration-------\n\n", iter;
+	}
+
+	let UBlog[iter] := -1;  # use -1 as new UB in case Updating upper bound function is not implemented.
+    let MarkUpdateUB[iter] := -1;
+	if(UpdateIter == UpdateIterNum-1) then
+    {
+        let MarkUpdateUB[iter] := 0;
+        let feasible := 1;
+        printf "\n\n############## Solving SubProblem_1_Fixed in %d-th Iteration. ##############\n\n\n", iter;
+		
+        let M_COST_S1_fixed := 0;
+        let M_COST_S1_fixed_bestbound := 0;
+		for{idx in 1..numI}
+		{
+		    let {n in BUS, t in LOAD_UC} Bus_Pd_UC[n,t] := Bus_Pd[n, t+(idx-1)*nTofI];
+      	    let {j in BRANCH, t in LOAD_UC} fixed_YktJkt_UC[j,t] := Ykt[j,t+(idx-1)*nTofI];
+     	    let {g in GEND, t in LOAD_UC} fixed_XgtUgt_UC[g,t] := Xgt[g,t+(idx-1)*nTofI];
+
+			if iter >= 100 then         # using the solution from previous iteration as an initial point
+			{
+	  	 	    let {j in BRANCH, t in LOAD_UC} Jkt[j,t] := temp_Jkt[j,t+(idx-1)*nTofI];
+	 	    	let {g in GEND, t in LOAD_UC} Ugt[g,t] := temp_Ugt[g,t+(idx-1)*nTofI];
+	 		    let {g in GEND, t in LOAD_UC} Vgt[g,t] := temp_Vgt[g,t+(idx-1)*nTofI];
+		 	    let {g in GEND, t in LOAD_UC} gen_supply[g,t] := temp_gen_supply[g,t+(idx-1)*nTofI];
+				let {g in GEND, t in LOAD_UC} reserve[g,t] := temp_reserve[g,t+(idx-1)*nTofI];
+				let {j in BRANCH, t in LOAD_UC} line_flow[j,t] := temp_line_flow[j,t+(idx-1)*nTofI];
+				let {n in BUS, t in LOAD_UC} bus_angle[n,t] := temp_bus_angle[n,t+(idx-1)*nTofI];		
+			}
+			
+		    printf "\n\n~~~~~~~~~~ Solving sub-problem_fixed 1 for %d-th interval in %d-th Iteration. ~~~~~~~~~~~\n", idx, iter;
+		    solve SubProblem_1_Fixed;
+		    display _total_solve_elapsed_time; 
+	  	 	    let {j in BRANCH, t in LOAD_UC} tempUB_Jkt[j,t+(idx-1)*nTofI] := Jkt[j,t];
+	 	    	let {g in GEND, t in LOAD_UC} tempUB_Ugt[g,t+(idx-1)*nTofI] := Ugt[g,t];
+	 		    let {g in GEND, t in LOAD_UC} tempUB_Vgt[g,t+(idx-1)*nTofI] := Vgt[g,t];
+		 	    let {g in GEND, t in LOAD_UC} tempUB_gen_supply[g,t+(idx-1)*nTofI] := gen_supply[g,t];
+				let {g in GEND, t in LOAD_UC} tempUB_reserve[g,t+(idx-1)*nTofI] := reserve[g,t];
+				let {j in BRANCH, t in LOAD_UC} tempUB_line_flow[j,t+(idx-1)*nTofI] := line_flow[j,t];
+				let {n in BUS, t in LOAD_UC} tempUB_bus_angle[n,t+(idx-1)*nTofI] := bus_angle[n,t];		
+			
+            if( sum{n in BUS, t in LOAD_UC}(LdSheding1[n,t]) >= 0.0001) then
+            {
+	    	    display LdSheding1;
+                let feasible := 0;
+                let numLoadShedding := numLoadShedding + 1;
+	    		printf "\n\n /////////////////// LdSheding1: %8.4f for %d-th interval in %d-th iteration.  /////////////////// \n\n", sum{n in BUS, t in LOAD_UC}LdSheding1[n,t], idx, iter;
+                let LS_test := 0;
+	    		for{n in BUS, t in LOAD_UC}
+		    	{
+		    	    if (LdSheding1[n,t] > 0)  then
+		    	    {
+    	    		    let LS_test := 1;
+	        		}
+		    	}
+		    	if LS_test == 0 then
+		    	{
+		    	    printf "\n\n /////////////////// Load Shedding is wrong in the SubProblem_1_Fixed in %d-th iteration.  /////////////////// \n\n",iter;
+		    	}
+	    	}
+			if feasible == 0 then break;
+			let M_COST_S1_fixed := M_COST_S1_fixed + M_COST_S1_UC_fixed;
+			let M_COST_S1_fixed_bestbound := M_COST_S1_fixed_bestbound + M_COST_S1_UC_fixed.bestbound;
+    		let gapGurobi_Sub_1_fixed_All[iter,idx] := (M_COST_S1_UC_fixed - M_COST_S1_UC_fixed.bestbound)/M_COST_S1_UC_fixed;
+		}
+		display _total_solve_elapsed_time; 
+	
+        if (feasible == 1) then
+        {
+			let UB := M_COST_S1_fixed;
+			let UBlog[iter] := UB;
+            if(UB < best_UB - 0.001) then
+            {
+                printf "\n\n------------ Updating UB Successfully in %d-th Iteration-------\n\n", iter;
+                let MarkUpdateUB[iter] := 1;
+                let best_UB := UB;
+				let numUpdateUB := numUpdateUB + 1;				
+					let {g in GEND, t in LOAD} best_Xgt[g,t] := Xgt[g,t];
+					let {k in BRANCH, t in LOAD} best_Ykt[k,t] := Ykt[k,t];
+					let {k in BRANCH, t in LOAD} best_Jkt[k,t] := tempUB_Jkt[k,t];
+					let {g in GEND, t in LOAD} best_Ugt[g,t] := tempUB_Ugt[g,t];
+					let {g in GEND, t in LOAD} best_Vgt[g,t] := tempUB_Vgt[g,t];
+					let {g in GEND, t in LOAD} best_gen_supply[g,t] := tempUB_gen_supply[g,t];
+					let {g in GEND, t in LOAD} best_reserve[g,t] := tempUB_reserve[g,t];
+					let {k in BRANCH, t in LOAD} best_line_flow[k,t] := tempUB_line_flow[k,t];
+					let {n in BUS, t in LOAD} best_bus_angle[n,t] := tempUB_bus_angle[n,t];
+            }
+			else
+			{
+			    let numNotUpdateUB := numNotUpdateUB + 1;
+                printf "\n\n------------ Not Updating UB in %d-th Iteration-------\n\n", iter;
+			}
+		}
+		else
+		{
+            let MarkUpdateUB[iter] := -2;
+			let UBlog[iter] := -2;  # solving the updating UB sub-problem but it is infeasible.
+		    printf "\n\n------------ Infeasible in %d-th ITERATION  when Updating Upper Bound ------------\n\n", iter;
+		}
+		let UpdateIter := -1;
+    }
+	
+	if(iter > scale_Init_limit - scale_limit) then
+	{
+		if( same = scale_limit) then
+		{
+		    let scale := scale / 2;
+			let same := 0;
+		}
+	    let same := same + 1;
+	}
+	
+
+    let gapAll[iter] := (UB - LB) / LB;
+	if(best_LB != 0) then
+	{
+        let best_gap := (best_UB - best_LB) / best_LB ;
+		let best_gapAll[iter] := best_gap;
+        printf "\n\n------------  The best_gap after %d-th iteration is:  %8.3f. ------------\n\n", iter, best_gap;
+        if(best_gap <= epsilon) then
+        {
+            printf "Program Converge Succeed after %d-th iterations !!!", iter;
+            break;
+        }
+	}
+	
+
+#### Updating dual variables
+	let tempTM := sum{k in BRANCH, t in LOAD}(temp_Jkt[k,t] - Ykt[k,t])^2;
+	let tempGM := sum{g in GEND, t in LOAD}(temp_Ugt[g,t] - Xgt[g,t])^2;
+	if tempTM == 0 then
+	{
+	    if tempGM == 0 then
+        {
+    		printf "\n\n------------  Ykt=Jkt and Xgt=Ugt after %d-th iteration. ------------\n\n", iter;
+            break;
+		}
+	}
+	if (UB != UB_init) && (LB != LB_init) then
+	{
+        if tempTM != 0 then let alphaTM := scale * (UB - LB) / tempTM;
+        if tempGM != 0 then let alphaGM := scale * (UB - LB) / tempGM;
+	}
+	else
+	{
+        if tempTM != 0 then let alphaTM := scale * 1000 / tempTM;
+        if tempGM != 0 then let alphaGM := scale * 1000 / tempGM;
+	}
+	let scalelog[iter] := scale;
+	let alphalogTM[iter] := alphaTM;
+	let alphalogGM[iter] := alphaGM;
+
+    for{k in BRANCH, t in LOAD}
+	{
+	    let dual_YktJkt[k,t] := dual_YktJkt[k,t] + alphaTM*(temp_Jkt[k,t] - Ykt[k,t]);
+	}
+	let numChanged_dual_XgtUgt[iter] := 0;
+    for{g in GEND, t in LOAD}
+	{
+	    let dual_XgtUgt[g,t] := dual_XgtUgt[g,t] + alphaGM*(temp_Ugt[g,t] - Xgt[g,t]);
+	    if dual_XgtUgt[g,t] <= 0 then
+		{
+		    let dual_XgtUgt[g,t] := 0;
+			let numChanged_dual_XgtUgt[iter] := numChanged_dual_XgtUgt[iter] + 1;
+		}
+	}
+
+	printf "\n\n---------- %d-th iteration result report ----------\n\n" ,iter;
+
+    display _total_solve_elapsed_time;
+
+	display Pseudo_LBlog;
+
+	display gapAll;
+
+    display gapGurobi_Sub_1_All;
+    display gapGurobi_Sub_1_fixed_All;
+
+	display scalelog;
+    display alphalogTM;
+    display alphalogGM;
+
+	display best_gapAll;
+	display UBlog;
+	display LBlog;
+
+	
+	display best_UB;
+	display best_LB;
+	display best_gap;
+
+    display numNotUpdateUB;
+    display numNotUpdateLB;
+    display numUpdateUB;
+    display numUpdateLB;
+	display numLoadShedding;
+	display MarkUpdateUB;
+	display MarkUpdateLB;
+
+    display nMainteT;
+    display nMainteG;
+    display _total_solve_elapsed_time;	
+
+	
+    let iter := iter + 1;	
+	let UpdateIter := UpdateIter + 1;
+}
+
+
+printf "\n\n------------ Report The Result --------------\n\n";
+
+	display UBlog;
+	display LBlog;
+
+	display scalelog;
+    display alphalogTM;
+    display alphalogGM;
+	
+	display best_gapAll;
+	
+	display best_UB;
+	display best_LB;
+	display best_gap;
+	
+    display numNotUpdateUB;
+    display numNotUpdateLB;
+    display numUpdateUB;
+    display numUpdateLB;
+	display numLoadShedding;
+	display numChanged_dual_XgtUgt;
+	
+	display MarkUpdateUB;
+	display MarkUpdateLB;
+	
+    display nMainteT;  # number of lines that needs maintenance
+    display nMainteG;   # number of gens that needs maintenance
+
+    display _total_solve_elapsed_time;
+	
+	display Ykt;
+	display Xgt;
+	#display Ugt;
+	display Pseudo_LBlog;
+
+	#display gapAll;
+    display gapGurobi_Sub_1_All;
+    display gapGurobi_Sub_1_fixed_All;
+

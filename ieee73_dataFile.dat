@@ -1,0 +1,57 @@
+### Load data:
+
+# data for the Buses
+param: BUS: bus_num bus_Pd
+            := include ieee73_scuc_bus.dat;
+
+# data for the GENs
+param: GEND: genD_num genD_bus genD_minUP genD_minDN genD_Init_Stat genD_Init_Pg genD_Init_t
+             genD_Pmax genD_Pmin genC_Startup genC_Cost genC_NLoad SPRamp HRamp StartRamp 
+			 genM_mark genM_cost genM_MTg genM_startingT genM_endingT 
+			 := include ieee73_scuc_gen.dat; 
+
+# data for the BRANCHs
+param: BRANCH: branch_num branch_fbus branch_tbus branch_x branch_rateA branch_rateC branch_radial
+               branchM_mark branchM_cost branchM_MTk branchM_startingT branchM_endingT
+               := include ieee73_scuc_branch.dat;
+
+# data for the Load's percentage of peak annual load
+param: LOAD24: load_pcnt
+               := include ieee73_scuc_load24.dat;
+
+#defines the hour in the week to be simulated for load:
+for {k in BUS, t in LOAD24}
+{
+	let Bus_Pd[k,t]:=0.99*load_pcnt[t]*bus_Pd[k]/MBase;
+	let Bus_Pd[k,t+24]:=1.0*load_pcnt[t]*bus_Pd[k]/MBase;
+	let Bus_Pd[k,t+24*2]:=1.0*load_pcnt[t]*bus_Pd[k]/MBase;
+	let Bus_Pd[k,t+24*3]:=1.0*load_pcnt[t]*bus_Pd[k]/MBase;
+	let Bus_Pd[k,t+24*4]:=0.98*load_pcnt[t]*bus_Pd[k]/MBase;
+	let Bus_Pd[k,t+24*5]:=0.83*load_pcnt[t]*bus_Pd[k]/MBase;
+	let Bus_Pd[k,t+24*6]:=0.80*load_pcnt[t]*bus_Pd[k]/MBase;
+};
+
+for {g in GEND}
+{
+    let genD_Pmax[g] := 1*genD_Pmax[g]/MBase;
+	let genD_Pmin[g] := 1*genD_Pmin[g]/MBase;
+	let SPRamp[g] := 1*SPRamp[g]/MBase;
+	let HRamp[g] := HRamp[g]/MBase;
+	let StartRamp[g] := StartRamp[g]/MBase;
+    if genM_mark[g] == 1 then
+	{
+	    let nMainteG := nMainteG + 1;
+	}
+};
+
+for {k in BRANCH}
+{
+    let branch_rateA[k] := branch_rateA[k]/MBase;
+    let branch_rateC[k] := branch_rateC[k]/MBase;
+	let branchM_startingT[k] := 1;
+	let branchM_endingT[k] := nT;
+    if branchM_mark[k] == 1 then
+	{
+	    let nMainteT := nMainteT + 1;
+	}
+};
