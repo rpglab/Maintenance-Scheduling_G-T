@@ -73,7 +73,7 @@ for{g in GEND, t in LOAD}
 }
 
 param epsilon; let epsilon := 0.05;
-param MaxIter; let MaxIter:= 20;
+param MaxIter; let MaxIter:= 10;
 param scale; let scale := 0.5;
 param scale_Init_limit; let scale_Init_limit := 5;    # starting time to change step-size
 param scale_limit := 2;      #
