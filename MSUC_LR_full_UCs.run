@@ -7,8 +7,8 @@
 printf "\n\n\n##############  Start Solving the Outage Coordination Problem ##############\n\n\n";
 
 model MSUC_Model_LR_full_UCs.mod;
-data case24_dataFile.dat;
-# data ieee73_dataFile.dat;
+# data case24_dataFile.dat;
+data ieee73_dataFile.dat;
 
 option solver gurobi;
 option gurobi_options('mipgap=0.01 timelim=60 bestbound=1');
